@@ -1,7 +1,7 @@
-import os, re, requests, yt_dlp, threading, tempfile
+import os, re, requests, yt_dlp, threading, asyncio, tempfile
 from flask import Flask
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 web_app = Flask(__name__)
@@ -13,28 +13,112 @@ def run_web():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Reel ka link bhejo!")
 
-def get_video_path(insta_link):
-    clean = insta_link.split("?")[0]
-    tmp = tempfile.gettempdir()
-    out_path = os.path.join(tmp, "%(id)s.%(ext)s")
+# Jab link aayega to option do
+async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text or ""
+    if "instagram.com" not in text: return
+    m = re.search(r'https?://(?:www\.)?instagram\.com/\S+', text)
+    if not m: return
+    link = m.group(0)
+    context.user_data['link'] = link
 
-    # Try 1: Cobalt API download
-    for api in ["https://co.wuk.sh/api/json", "https://api.cobalt.tools/api/json"]:
+    keyboard = [
+        [InlineKeyboardButton("⚡ SuperFast (480p ~5MB)", callback_data="480")],
+        [InlineKeyboardButton("🚀 Fast (720p ~8MB)", callback_data="720")],
+        [InlineKeyboardButton("💎 HD Quality (1080p ~30MB)", callback_data="1080")]
+    ]
+    await update.message.reply_text("Quality choose karo 👇", reply_markup=InlineKeyboardMarkup(keyboard))
+
+# Progress animation ke liye
+async def update_progress(message, percent):
+    try:
+        bar = "█" * int(percent/10) + "░" * (10-int(percent/10))
+        await message.edit_text(f"Downloading...\n{bar} {percent:.2f}%\n⏳ Please wait...")
+    except: pass # Flood control
+
+async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    quality = query.data
+    link = context.user_data.get('link')
+
+    status_msg = await query.edit_message_text(f"Starting download {quality}p... 0.00%")
+
+    # Ye function blocking hai, isliye dusre thread me chalayenge taaki 100 user handle ho sake
+    def download_with_progress():
+        tmp = tempfile.gettempdir()
+        fpath = os.path.join(tmp, f"reel_{quality}.mp4")
+
+        last_percent = 0
+        def hook(d):
+            nonlocal last_percent
+            if d['status'] == 'downloading':
+                p = d.get('_percent_str','0%').replace('%','')
+                try: cur = float(p)
+                except: cur = 0
+                # Har 3% par hi animation update karo warna Telegram ban kar dega
+                if cur - last_percent > 3:
+                    last_percent = cur
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(update_progress(status_msg, cur))
+
+        # Cobalt se quality ke hisab se mango
         try:
-            print(f"Trying Cobalt {api}")
-            r = requests.post(api, json={"url": clean}, headers={"Accept":"application/json"}, timeout=40)
-            j = r.json()
-            v_url = j.get("url")
+            r = requests.post("https://co.wuk.sh/api/json",
+                json={"url": link.split("?")[0], "vQuality": quality, "vCodec": "h264"},
+                headers={"Accept":"application/json"}, timeout=30)
+            v_url = r.json().get("url")
             if v_url:
-                # download video file
-                vid = requests.get(v_url, stream=True, timeout=60)
-                fpath = os.path.join(tmp, "reel.mp4")
+                # requests se % nikalna
+                resp = requests.get(v_url, stream=True, timeout=60)
+                total = int(resp.headers.get('content-length', 0))
+                done = 0
                 with open(fpath, 'wb') as f:
-                    for chunk in vid.iter_content(1024*1024):
+                    for chunk in resp.iter_content(1024*256):
                         f.write(chunk)
+                        done += len(chunk)
+                        if total:
+                            per = done/total*100
+                            if per - last_percent > 2:
+                                last_percent = per
+                                loop = asyncio.new_event_loop()
+                                loop.run_until_complete(update_progress(status_msg, per))
                 return fpath
         except Exception as e:
-            print(f"Cobalt error {api}: {e}")
+            print(e)
+
+        # Fallback yt-dlp
+        try:
+            ydl_opts = {'outtmpl': fpath, 'format': f'best[height<={quality}]', 'quiet': True, 'progress_hooks': [hook]}
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([link])
+            return fpath
+        except: return None
+
+    loop = asyncio.get_running_loop()
+    path = await loop.run_in_executor(None, download_with_progress)
+
+    if path and os.path.exists(path):
+        await status_msg.edit_text("Uploading... 99%")
+        await context.bot.send_video(chat_id=query.message.chat_id, video=open(path,'rb'), caption=f"Ye lo {quality}p ✅")
+        await status_msg.delete()
+        os.remove(path)
+    else:
+        await status_msg.edit_text("Fail ho gaya, private reel hai.")
+
+def main():
+    threading.Thread(target=run_web, daemon=True).start()
+    print("Bot chal raha hai...")
+    # Important: 100 user ke liye concurrency badhao
+    app = Application.builder().token(TOKEN).concurrent_updates(100).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
+    app.add_handler(CallbackQueryHandler(button_click))
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()            print(f"Cobalt error {api}: {e}")
 
     # Try 2: yt-dlp direct (with mobile headers)
     try:
