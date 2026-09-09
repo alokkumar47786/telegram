@@ -1,132 +1,101 @@
-import os, re, requests, threading, tempfile, asyncio
+import os, re, requests, threading, tempfile
 import yt_dlp
 from flask import Flask
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-
 web_app = Flask(__name__)
 @web_app.route('/')
-def home():
-    return "Bot is Running!"
-
+def home(): return "Bot is Running!"
 def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    web_app.run(host='0.0.0.0', port=port)
+    web_app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Reel ka link bhejo!")
+    await update.message.reply_text("Reel link bhejo!")
 
 async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
-    if "instagram.com" not in text:
-        return
+    if "instagram.com" not in text: return
     m = re.search(r'https?://(?:www\.)?instagram\.com/\S+', text)
-    if not m:
-        return
-    link = m.group(0)
-    context.user_data['link'] = link
+    if not m: return
+    context.user_data['link'] = m.group(0)
     keyboard = [
-        [InlineKeyboardButton("⚡ SuperFast 480p", callback_data="480")],
-        [InlineKeyboardButton("🚀 Fast 720p", callback_data="720")],
-        [InlineKeyboardButton("💎 HD 1080p", callback_data="1080")]
+        [InlineKeyboardButton("⚡ SuperFast 480p ~5MB", callback_data="480")],
+        [InlineKeyboardButton("🚀 Fast 720p ~8MB", callback_data="720")],
+        [InlineKeyboardButton("💎 HD 1080p", callback_data="best")]
     ]
-    await update.message.reply_text("Quality choose karo 👇", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text("Quality select karo 👇", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     quality = query.data
     link = context.user_data.get('link')
-    if not link:
-        await query.edit_message_text("Link expire ho gaya, dobara bhejo")
-        return
 
-    status_msg = await query.edit_message_text(f"Downloading {quality}p... 0%")
+    msg = await query.edit_message_text(f"Downloading {quality}p... ⏳")
 
-    def do_download(q, prog_cb):
+    # DOWNLOAD FUNCTION - Simple, no animation thread issue
+    def download():
+        clean = link.split("?")[0]
         tmp = tempfile.gettempdir()
-        fpath = os.path.join(tmp, f"reel_{q}.mp4")
-        # Try Cobalt
-        try:
-            resp = requests.post(
-                "https://co.wuk.sh/api/json",
-                json={"url": link.split("?")[0], "vQuality": q, "vCodec": "h264"},
-                headers={"Accept": "application/json"},
-                timeout=40
-            )
-            data = resp.json()
-            v_url = data.get("url")
-            if v_url:
-                r = requests.get(v_url, stream=True, timeout=60)
-                total = int(r.headers.get("content-length", 0))
-                done = 0
-                last = 0
-                with open(fpath, 'wb') as f:
-                    for chunk in r.iter_content(chunk_size=256*1024):
-                        if chunk:
-                            f.write(chunk)
-                            done += len(chunk)
-                            if total > 0:
-                                per = int(done/total*100)
-                                if per - last >= 5:
-                                    last = per
-                                    prog_cb(per)
-                return fpath
-        except Exception as e:
-            print("Cobalt fail", e)
+        out = os.path.join(tmp, "reel.mp4")
+        if os.path.exists(out): os.remove(out)
 
-        # Fallback yt-dlp
+        # 1. Pehle wala purana method jo kaam kar raha tha
+        for api_url in ["https://co.wuk.sh/api/json", "https://api.cobalt.tools/api/json"]:
+            try:
+                print(f"Trying {api_url} quality {quality}")
+                payload = {"url": clean}
+                if quality!= "best":
+                    payload["vQuality"] = quality
+
+                r = requests.post(api_url, json=payload, headers={"Accept":"application/json"}, timeout=30)
+                print(r.text[:200])
+                v_url = r.json().get("url")
+                if v_url:
+                    print("Got video url, downloading file")
+                    with requests.get(v_url, stream=True, timeout=60) as vid:
+                        with open(out, 'wb') as f:
+                            for chunk in vid.iter_content(1024*1024):
+                                f.write(chunk)
+                    return out
+            except Exception as e:
+                print(f"API {api_url} fail: {e}")
+                continue
+
+        # 2. Fallback yt-dlp
         try:
-            def hook(d):
-                if d['status'] == 'downloading':
-                    s = d.get('_percent_str', '0%').replace('%','').strip()
-                    try:
-                        per = int(float(s))
-                        prog_cb(per)
-                    except:
-                        pass
-            opts = {'outtmpl': fpath, 'format': f'best[height<={q}]', 'quiet': True, 'progress_hooks': [hook]}
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([link])
-            return fpath
+            print("Trying yt-dlp")
+            fmt = f"best[height<={quality}]" if quality!= "best" else "best"
+            ydl_opts = {"outtmpl": out, "format": fmt, "quiet": True}
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([clean])
+            return out
         except Exception as e:
-            print("yt-dlp fail", e)
+            print(f"yt-dlp fail {e}")
             return None
 
-    last_percent = 0
-    def progress_callback(p):
-        nonlocal last_percent
-        if p - last_percent >= 3:
-            last_percent = p
-            bar = "█" * int(p/10) + "░" * (10 - int(p/10))
-            try:
-                asyncio.run_coroutine_threadsafe(
-                    status_msg.edit_text(f"Downloading...\n{bar} {p}%\nQuality: {quality}p"),
-                    asyncio.get_event_loop()
-                )
-            except:
-                pass
-
+    import asyncio
     loop = asyncio.get_running_loop()
-    path = await loop.run_in_executor(None, do_download, quality, progress_callback)
+    path = await loop.run_in_executor(None, download)
 
     if path and os.path.exists(path):
+        size_mb = os.path.getsize(path) / (1024*1024)
+        await msg.edit_text(f"Uploading... {size_mb:.1f}MB")
         try:
-            await status_msg.edit_text("Uploading... 95%")
-            await context.bot.send_video(chat_id=query.message.chat_id, video=open(path, 'rb'), caption=f"{quality}p ✅")
-            await status_msg.delete()
+            await context.bot.send_video(chat_id=query.message.chat_id, video=open(path, 'rb'), caption=f"{quality}p | {size_mb:.1f}MB ✅")
+            await msg.delete()
             os.remove(path)
         except Exception as e:
-            await status_msg.edit_text(f"Upload fail: {e}")
+            await msg.edit_text(f"Send fail: {e}")
     else:
-        await status_msg.edit_text("Fail ho gaya. Private reel hai ya Insta ne block kiya. Dusri public reel try karo.")
+        await msg.edit_text("Fail ho gaya. Ek baar logs bhejo.")
 
 def main():
     threading.Thread(target=run_web, daemon=True).start()
     print("Bot chal raha hai...")
-    app = Application.builder().token(TOKEN).concurrent_updates(100).build()
+    app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
     app.add_handler(CallbackQueryHandler(button_click))
@@ -134,4 +103,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
