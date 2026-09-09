@@ -1,86 +1,65 @@
-import os
-import re
-import requests
-import yt_dlp
+import os, re, requests, yt_dlp, threading
+from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
+# Ye chota sa web server hai taaki Render ko lage bot zinda hai
+web_app = Flask(__name__)
+@web_app.route('/')
+def home():
+    return "Bot is Running!"
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    web_app.run(host='0.0.0.0', port=port)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Bhejo Instagram Reel ka link, mai download karke deta hu! 🔥")
+    await update.message.reply_text("Bhejo Instagram Reel ka link!")
 
 def get_video_url(insta_link):
     clean_link = insta_link.split("?")[0]
-
-    # METHOD 1: Cobalt API
     try:
-        print("Trying Cobalt...")
-        r = requests.post("https://co.wuk.sh/api/json",
-            json={"url": clean_link},
-            headers={"Accept": "application/json"},
-            timeout=30
-        )
+        r = requests.post("https://co.wuk.sh/api/json", json={"url": clean_link}, headers={"Accept": "application/json"}, timeout=30)
         data = r.json()
         if data.get("url"):
-            print("Cobalt Success")
             return data["url"]
-    except Exception as e:
-        print(f"Cobalt Fail: {e}")
-
-    # METHOD 2: DDInstagram + yt-dlp (no login needed)
+    except:
+        pass
     try:
-        print("Trying DD...")
         dd_link = clean_link.replace("instagram.com", "ddinstagram.com").replace("www.ddinstagram.com", "ddinstagram.com")
-        ydl_opts = {'quiet': True, 'no_warnings': True, 'format': 'best'}
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL({'quiet': True, 'format': 'best'}) as ydl:
             info = ydl.extract_info(dd_link, download=False)
             return info.get('url')
-    except Exception as e:
-        print(f"DD Fail: {e}")
+    except:
         return None
 
 async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
+    text = update.message.text or ""
     if "instagram.com" not in text:
         return
-
-    match = re.search(r'https?://(?:www\.)?instagram\.com/\S+', text)
-    if not match:
+    m = re.search(r'https?://(?:www\.)?instagram\.com/\S+', text)
+    if not m:
         return
-
-    insta_link = match.group(0)
+    link = m.group(0)
     await update.message.reply_text("Downloading... ⏳")
-
-    video_url = get_video_url(insta_link)
-
-    if video_url:
+    vurl = get_video_url(link)
+    if vurl:
         try:
-            await update.message.reply_video(video=video_url, caption="Ye lo! ✅")
+            await update.message.reply_video(video=vurl)
         except:
-            # agar video direct send na ho to link bhej do
-            await update.message.reply_text(f"Direct link: {video_url}")
+            await update.message.reply_text(vurl)
     else:
-        await update.message.reply_text("Error: Ye reel download nahi ho payi. Private hogi ya link galat hai.")
+        await update.message.reply_text("Download fail ho gaya.")
 
 def main():
+    # Web server ko background me chalao
+    threading.Thread(target=run_web, daemon=True).start()
     print("Bot chal raha hai...")
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()        await update.message.reply_text(f"Error aa gaya: {e}")
-
-def main():
-    if not BOT_TOKEN:
-        print("ERROR: TELEGRAM_BOT_TOKEN nahi mila!")
-        return
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, download_reel))
-    print("Bot chal raha hai...")
     app.run_polling()
 
 if __name__ == "__main__":
