@@ -4,8 +4,8 @@ import yt_dlp
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# Token yahan mat likhna - niche bataya hai kahan likhna hai
-BOT_TOKEN = os.getenv("8820325154:AAE4Jk_DYdnce73orR9WFPn-T7_PEKf5kiE")
+# Token environment variable se lena hai
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -50,5 +50,5 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
     app.run_polling()
 
-if name == "main":
+if __name__ == "__main__":
     main()
