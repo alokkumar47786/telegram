@@ -20,20 +20,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def get_video_url(insta_link):
     clean_link = insta_link.split("?")[0]
-    try:
-        r = requests.post("https://co.wuk.sh/api/json", json={"url": clean_link}, headers={"Accept": "application/json"}, timeout=30)
-        data = r.json()
-        if data.get("url"):
-            return data["url"]
-    except:
-        pass
-    try:
-        dd_link = clean_link.replace("instagram.com", "ddinstagram.com").replace("www.ddinstagram.com", "ddinstagram.com")
-        with yt_dlp.YoutubeDL({'quiet': True, 'format': 'best'}) as ydl:
-            info = ydl.extract_info(dd_link, download=False)
-            return info.get('url')
-    except:
-        return None
+    # Sirf Cobalt - 2 server try karenge
+    for api_url in ["https://co.wuk.sh/api/json", "https://api.cobalt.tools/api/json"]:
+        try:
+            print(f"Trying {api_url}...")
+            r = requests.post(api_url,
+                json={"url": clean_link},
+                headers={"Accept": "application/json"},
+                timeout=30
+            )
+            data = r.json()
+            if data.get("url"):
+                print("Success!")
+                return data["url"]
+        except Exception as e:
+            print(f"Fail: {e}")
+            continue
+    return None
 
 async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
